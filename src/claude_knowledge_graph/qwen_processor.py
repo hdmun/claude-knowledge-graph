@@ -25,6 +25,7 @@ from claude_knowledge_graph.config import (
     LOGS_DIR,
     MAX_PROMPT_CHARS,
     MAX_RESPONSE_CHARS,
+    MAX_TOOL_CONTEXT_CHARS,
     PROCESSED_DIR,
     QUEUE_DIR,
 )
@@ -151,16 +152,110 @@ def get_pending_files() -> list[Path]:
     return files
 
 
-def build_tagging_prompt(qa: dict) -> str:
+def extract_tool_summary(transcript_path: str) -> dict:
+    """Extract tool use summary from transcript JSONL.
+
+    Returns: {
+        "files_modified": ["path1", "path2"],  # Write/Edit (deduplicated, max 30)
+        "commands_executed": ["cmd1", "cmd2"],  # Bash (truncated 120chars, max 20)
+        "tool_counts": {"Write": 3, "Edit": 5, "Bash": 2, "Read": 8}
+    }
+    """
+    if not transcript_path:
+        return {}
+
+    try:
+        files_modified: list[str] = []
+        files_seen: set[str] = set()
+        commands_executed: list[str] = []
+        tool_counts: dict[str, int] = {}
+
+        with open(transcript_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                # Handle both envelope format and flat format
+                msg = entry.get("message", entry)
+                if msg.get("role") != "assistant":
+                    continue
+
+                content = msg.get("content", [])
+                if not isinstance(content, list):
+                    continue
+
+                for block in content:
+                    if not isinstance(block, dict) or block.get("type") != "tool_use":
+                        continue
+
+                    name = block.get("name", "")
+                    inp = block.get("input", {})
+
+                    # Count all tools
+                    tool_counts[name] = tool_counts.get(name, 0) + 1
+
+                    # Collect file paths from Write/Edit
+                    if name in ("Write", "Edit"):
+                        fpath = inp.get("file_path", "")
+                        if fpath and fpath not in files_seen and len(files_modified) < 30:
+                            files_seen.add(fpath)
+                            files_modified.append(fpath)
+
+                    # Collect commands from Bash
+                    elif name == "Bash":
+                        cmd = inp.get("command", "")
+                        if cmd and len(commands_executed) < 20:
+                            commands_executed.append(cmd[:120])
+
+        if not tool_counts:
+            return {}
+
+        return {
+            "files_modified": files_modified,
+            "commands_executed": commands_executed,
+            "tool_counts": tool_counts,
+        }
+
+    except FileNotFoundError:
+        log(f"Transcript file not found: {transcript_path}")
+        return {}
+    except Exception as e:
+        log(f"Failed to extract tool summary: {e}")
+        return {}
+
+
+def build_tagging_prompt(qa: dict, tool_summary: dict | None = None) -> str:
     """Build the prompt for Qwen to tag/summarize a Q&A pair."""
     prompt_text = qa.get("prompt", "")[:MAX_PROMPT_CHARS]
     response_text = qa.get("response", "")[:MAX_RESPONSE_CHARS]
+
+    # Build optional tool context section
+    tool_context = ""
+    if tool_summary and any(tool_summary.get(k) for k in ("files_modified", "commands_executed", "tool_counts")):
+        parts = []
+        files = tool_summary.get("files_modified", [])
+        if files:
+            parts.append("Files modified: " + ", ".join(files))
+        cmds = tool_summary.get("commands_executed", [])
+        if cmds:
+            parts.append("Commands run: " + "; ".join(cmds))
+        counts = tool_summary.get("tool_counts", {})
+        if counts:
+            counts_str = ", ".join(f"{k}: {v}" for k, v in sorted(counts.items()))
+            parts.append(f"Tool usage: {counts_str}")
+        tool_context = "\n\nContext (tools used during session):\n" + "\n".join(parts)
+        tool_context = tool_context[:MAX_TOOL_CONTEXT_CHARS]
 
     return f"""Analyze this developer Q&A pair and respond with JSON only.
 
 Question: {prompt_text}
 
-Answer: {response_text}
+Answer: {response_text}{tool_context}
 
 Respond with this exact JSON structure:
 {{
@@ -255,14 +350,22 @@ def process_file(filepath: Path) -> bool:
         log(f"Failed to read {filepath.name}: {e}")
         return False
 
-    prompt = build_tagging_prompt(qa)
+    # Extract tool summary from transcript
+    tool_summary = {}
+    transcript_path = qa.get("transcript_path", "")
+    if transcript_path:
+        tool_summary = extract_tool_summary(transcript_path)
+
+    prompt = build_tagging_prompt(qa, tool_summary)
     result = call_qwen(prompt)
 
     if result is None:
         log(f"Failed to get Qwen result for {filepath.name}")
         return False
 
-    # Merge Qwen results into the Q&A entry
+    # Merge Qwen results and tool summary into the Q&A entry
+    if tool_summary:
+        qa["tool_summary"] = tool_summary
     qa["qwen_result"] = result
     qa["status"] = "processed"
     qa["processed_at"] = datetime.now().isoformat()

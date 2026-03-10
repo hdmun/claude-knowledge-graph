@@ -62,37 +62,91 @@ def handle_prompt_submit(data: dict) -> None:
     log(f"Saved prompt for session {session_id} (#{len(existing)})")
 
 
-def extract_full_response(transcript_path: str) -> str:
-    """Extract all assistant text messages from the transcript JSONL file.
+MAX_WRITE_CONTENT_CHARS = 2000  # Max chars of Write content to inline
 
-    Concatenates all assistant text blocks (excluding tool calls) to capture
-    intermediate explanations between tool uses.
+
+def _is_user_prompt(msg: dict) -> bool:
+    """Check if a message is a user prompt (not a tool_result)."""
+    if msg.get("role") != "user":
+        return False
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        return any(
+            isinstance(b, dict) and b.get("type") == "text"
+            for b in content
+        ) and not any(
+            isinstance(b, dict) and b.get("type") == "tool_result"
+            for b in content
+        )
+    return False
+
+
+def _extract_assistant_parts(msg: dict) -> list[str]:
+    """Extract text and Write tool content from an assistant message."""
+    parts: list[str] = []
+    content = msg.get("content", "")
+    if isinstance(content, str):
+        if content.strip():
+            parts.append(content.strip())
+    elif isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                if isinstance(block, str) and block.strip():
+                    parts.append(block.strip())
+                continue
+            if block.get("type") == "text":
+                text = block.get("text", "").strip()
+                if text:
+                    parts.append(text)
+            elif block.get("type") == "tool_use" and block.get("name") == "Write":
+                inp = block.get("input", {})
+                fpath = inp.get("file_path", "")
+                code = inp.get("content", "")
+                if fpath and code:
+                    truncated = code[:MAX_WRITE_CONTENT_CHARS]
+                    if len(code) > MAX_WRITE_CONTENT_CHARS:
+                        truncated += "\n... (truncated)"
+                    parts.append(f"[Created file: {fpath}]\n```\n{truncated}\n```")
+    return parts
+
+
+def extract_full_response(transcript_path: str) -> str:
+    """Extract assistant response for the last turn from transcript JSONL.
+
+    Finds the last user prompt message (not tool_result), then collects
+    all assistant text blocks and Write tool content after it.
     """
     if not transcript_path:
         return ""
     try:
-        parts: list[str] = []
+        # Read all entries
+        entries: list[dict] = []
         with open(transcript_path, "r") as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
-                entry = json.loads(line)
-                if entry.get("role") != "assistant":
-                    continue
-                content = entry.get("content", "")
-                # content can be a string or a list of content blocks
-                if isinstance(content, str):
-                    if content.strip():
-                        parts.append(content.strip())
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text = block.get("text", "").strip()
-                            if text:
-                                parts.append(text)
-                        elif isinstance(block, str) and block.strip():
-                            parts.append(block.strip())
+                entries.append(json.loads(line))
+
+        # Find the index of the last user prompt
+        last_prompt_idx = -1
+        for i, entry in enumerate(entries):
+            msg = entry.get("message", entry)
+            if _is_user_prompt(msg):
+                last_prompt_idx = i
+
+        if last_prompt_idx < 0:
+            return ""
+
+        # Collect assistant parts after the last user prompt
+        parts: list[str] = []
+        for entry in entries[last_prompt_idx + 1:]:
+            msg = entry.get("message", entry)
+            if msg.get("role") == "assistant":
+                parts.extend(_extract_assistant_parts(msg))
+
         return "\n\n".join(parts) if parts else ""
     except Exception as e:
         log(f"Failed to read transcript: {e}")
@@ -128,6 +182,7 @@ def handle_stop(data: dict) -> None:
             "prompt": "",
             "response": response,
             "status": "pending",
+            "transcript_path": transcript_path,
         }
         ts_slug = datetime.now().strftime("%Y%m%d_%H%M%S")
         out_file = QUEUE_DIR / f"{ts_slug}_{session_id}.json"
@@ -159,6 +214,7 @@ def handle_stop(data: dict) -> None:
         "prompt": last_prompt.get("prompt", ""),
         "response": response,
         "status": "pending",
+        "transcript_path": transcript_path,
     }
 
     ts_slug = datetime.now().strftime("%Y%m%d_%H%M%S")

@@ -193,6 +193,18 @@ def write_session_note(
     tags_inline = " ".join(f"#{t}" for t in tags) if tags else ""
     concepts_str = ", ".join(f"[[{c}]]" for c in key_concepts) if key_concepts else ""
 
+    # Tool summary data
+    tool_summary = qa.get("tool_summary", {})
+    files_modified = tool_summary.get("files_modified", [])
+    commands_executed = tool_summary.get("commands_executed", [])
+    tool_counts = tool_summary.get("tool_counts", {})
+    total_tools = sum(tool_counts.values()) if tool_counts else 0
+
+    # Frontmatter extras for tool summary
+    tool_frontmatter = ""
+    if tool_summary:
+        tool_frontmatter = f"\nfiles_modified: {len(files_modified)}\ntools_used: {total_tools}"
+
     # See Also section
     see_also_lines = ""
     if see_also:
@@ -201,6 +213,22 @@ def write_session_note(
             reason_str = " — " + "; ".join(reasons) if reasons else ""
             lines.append(f"- [[{other_fname}]]{reason_str}")
         see_also_lines = "\n## See Also\n\n" + "\n".join(lines) + "\n"
+
+    # Session Activity section
+    activity_section = ""
+    if tool_summary:
+        activity_parts = []
+        if files_modified:
+            file_lines = "\n".join(f"  - `{f}`" for f in files_modified)
+            activity_parts.append(f"### Files Modified ({len(files_modified)})\n{file_lines}")
+        if commands_executed:
+            cmd_lines = "\n".join(f"  - `{c}`" for c in commands_executed)
+            activity_parts.append(f"### Commands Executed ({len(commands_executed)})\n{cmd_lines}")
+        if tool_counts:
+            counts_str = ", ".join(f"{k}: {v}" for k, v in sorted(tool_counts.items()))
+            activity_parts.append(f"**Tool Usage** ({total_tools} total): {counts_str}")
+        if activity_parts:
+            activity_section = "\n## Session Activity\n\n" + "\n\n".join(activity_parts) + "\n"
 
     content = f"""---
 title: "{title}"
@@ -211,7 +239,7 @@ category: {category}
 tags:
 {tags_yaml}
 type: session
-cwd: "{cwd}"
+cwd: "{cwd}"{tool_frontmatter}
 ---
 
 # {title}
@@ -225,7 +253,7 @@ cwd: "{cwd}"
 **Key Concepts**: {concepts_str}
 
 **Project**: `{cwd}`
-{see_also_lines}
+{activity_section}{see_also_lines}
 ## Conversation
 
 > [!question] Prompt
