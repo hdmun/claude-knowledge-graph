@@ -99,6 +99,32 @@ huggingface-cli download unsloth/Qwen3.5-4B-GGUF \
 ckg init --vault-dir ~/my-obsidian-vault
 ```
 
+If llama-server or the GGUF model can't be auto-detected, you'll be prompted to enter the paths manually:
+
+```
+$ ckg init --vault-dir ~/my-obsidian-vault
+...
+llama-server: NOT FOUND (auto-detect failed)
+  Enter llama-server path (or press Enter to skip): /path/to/llama-server
+Model: NOT FOUND (auto-detect failed)
+  Enter GGUF model path (or press Enter to skip): /path/to/Qwen3.5-4B-Q4_K_M.gguf
+```
+
+**Auto-detect works when:**
+- **llama-server**: available in your `PATH` (e.g. via `brew install llama.cpp`)
+- **Model**: a `.gguf` file exists under `~/.local/share/claude-knowledge-graph/models/`
+
+You can also set paths explicitly in `~/.config/claude-knowledge-graph/config.json`:
+
+```json
+{
+  "llama_server": "/path/to/llama-server",
+  "model_path": "/path/to/Qwen3.5-4B-Q4_K_M.gguf"
+}
+```
+
+> **Tip**: To change paths later, edit `config.json` directly — no need to re-run `ckg init`.
+
 This command will:
 - Create `~/.config/claude-knowledge-graph/config.json`
 - Create `~/.local/share/claude-knowledge-graph/{queue,processed,logs}` directories
