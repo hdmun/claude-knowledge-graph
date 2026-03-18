@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """On-demand Qwen 3.5 4B processor for Q&A tagging and summarization.
 
 Uses llama-server (llama.cpp) with Unsloth GGUF model, accessed via OpenAI-compatible API.

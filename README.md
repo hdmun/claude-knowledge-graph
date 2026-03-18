@@ -1,14 +1,14 @@
 # claude-knowledge-graph
 
-Auto-capture Claude Code Q&A → Qwen 3.5 tagging/summarization → Obsidian knowledge graph
+Auto-capture Claude Code and Gemini CLI Q&A → Qwen 3.5 tagging/summarization → Obsidian knowledge graph
 
-Automatically captures all conversations from Claude Code, tags and summarizes them with a local LLM (Qwen 3.5 4B), and builds a knowledge graph in your Obsidian vault.
+Automatically captures conversations from Claude Code and Gemini CLI, tags and summarizes them with a local LLM (Qwen 3.5 4B), and builds a knowledge graph in your Obsidian vault.
 
 ![Knowledge Graph Example](docs/knowledge-graph-example.png)
 
 ## Why?
 
-- **Knowledge disappears after every session** — Debugging insights, architecture decisions, and problem-solving patterns from Claude Code vanish when the session ends. This tool automatically turns them into searchable, structured notes.
+- **Knowledge disappears after every session** — Debugging insights, architecture decisions, and problem-solving patterns from Claude Code or Gemini CLI vanish when the session ends. This tool automatically turns them into searchable, structured notes.
 - **Zero friction** — Hook-based auto-capture means you don't have to do anything. Just use Claude Code as usual.
 - **Fast & lightweight edge AI** — Qwen 3.5 4B runs in the background and finishes tagging in seconds, never interrupting your workflow.
 - **Privacy-safe** — All processing stays on your machine. Safe for enterprise environments where code-related conversations must not leave the local network.
@@ -17,7 +17,7 @@ Automatically captures all conversations from Claude Code, tags and summarizes t
 
 ## Key Features
 
-- **Auto-capture**: Collects all Q&A pairs automatically via Claude Code Hooks
+- **Auto-capture**: Collects all Q&A pairs automatically via Claude Code Hooks and Gemini CLI Hooks
 - **Local LLM tagging**: llama.cpp + Qwen 3.5 4B GGUF (~2.5GB VRAM)
 - **Auto-trigger**: Background tagging → note generation on Stop hook
 - **Obsidian knowledge graph**: Auto-generates Daily notes, Concept notes, and MOC
@@ -26,10 +26,10 @@ Automatically captures all conversations from Claude Code, tags and summarizes t
 ## How It Works
 
 ```
-Claude Code session
+Claude Code / Gemini CLI session
   │
-  ├─ UserPromptSubmit hook → capture prompt
-  └─ Stop hook → generate Q&A pair → background tagging
+  ├─ Claude UserPromptSubmit or Gemini BeforeAgent → capture prompt
+  └─ Claude Stop or Gemini AfterAgent → generate Q&A pair → background tagging
                     │
                     ▼
             Qwen 3.5 4B (via llama-server)
@@ -134,11 +134,17 @@ This command will:
 - Create `~/.config/claude-knowledge-graph/config.json`
 - Create `~/.local/share/claude-knowledge-graph/{queue,processed,logs}` directories
 - Auto-register hooks in `~/.claude/settings.json`
+- Auto-register hooks in `~/.gemini/settings.json`
 - Verify llama-server and model paths
+
+Gemini CLI notes:
+- Hooks are installed in `~/.gemini/settings.json` by default.
+- This project uses `BeforeAgent` to capture prompts and `AfterAgent` to capture final responses.
+- Gemini hooks run synchronously and require clean JSON on stdout, so the hook handler writes logs to files only.
 
 ## Usage
 
-After installation, **it works automatically whenever you use Claude Code**.
+After installation, **it works automatically whenever you use Claude Code or Gemini CLI**.
 
 ```bash
 # Check status
@@ -155,10 +161,10 @@ ckg uninstall
 
 | Command | Description |
 |---------|-------------|
-| `ckg init --vault-dir <path>` | Create config + register hooks |
+| `ckg init --vault-dir <path> [--hooks all\|claude\|gemini]` | Create config + register hooks |
 | `ckg run` | Run pipeline (Qwen tagging → Obsidian notes) |
 | `ckg status` | Show pending/processed/written counts + hooks status |
-| `ckg uninstall` | Unregister hooks + optionally delete config |
+| `ckg uninstall [--hooks all\|claude\|gemini]` | Unregister hooks + optionally delete config |
 
 ## Configuration
 
@@ -216,7 +222,7 @@ python scripts/gen_graph_image.py
 ## Requirements
 
 - Python 3.10+
-- [Claude Code](https://claude.com/claude-code) CLI
+- [Claude Code](https://claude.com/claude-code) CLI and/or Gemini CLI
 - llama.cpp (`llama-server`)
 - GPU recommended (CPU works but is slower)
 

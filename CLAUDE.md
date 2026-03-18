@@ -1,6 +1,6 @@
 # claude-knowledge-graph
 
-Auto-capture Claude Code Q&A → Qwen 3.5 4B tagging/summarization → Obsidian knowledge graph.
+Auto-capture Claude Code and Gemini CLI Q&A → Qwen 3.5 4B tagging/summarization → Obsidian knowledge graph.
 Package: `claude-knowledge-graph`, CLI: `ckg`
 
 ## Project Structure
@@ -14,11 +14,11 @@ claude-knowledge-graph/
 │   └── claude_knowledge_graph/
 │       ├── __init__.py         # __version__
 │       ├── config.py           # env vars → config.json → defaults
-│       ├── qa_logger.py        # Hook handler (stdin JSON → queue/)
+│       ├── qa_logger.py        # Hook handler (Claude/Gemini stdin JSON → queue/)
 │       ├── qwen_processor.py   # llama-server + OpenAI API tagging
 │       ├── obsidian_writer.py  # Obsidian markdown generation
 │       ├── cli.py              # Click CLI: init/run/status/uninstall
-│       └── hooks.py            # ~/.claude/settings.json hooks register/unregister
+│       └── hooks.py            # ~/.claude/settings.json and ~/.gemini/settings.json hooks register/unregister
 ├── scripts/
 │   └── gen_graph_image.py      # Graph visualization (optional, [graph] extra)
 └── docs/
@@ -28,9 +28,9 @@ claude-knowledge-graph/
 ## Pipeline Flow
 
 ```
-Claude Code session
-  ├─ UserPromptSubmit hook → qa_logger → queue/{session}_prompt.json
-  └─ Stop hook → qa_logger → queue/{ts}_{session}.json (Q&A pair)
+Claude Code / Gemini CLI session
+  ├─ UserPromptSubmit or BeforeAgent → qa_logger → queue/{session}_prompt.json
+  └─ Stop or AfterAgent → qa_logger → queue/{ts}_{session}.json (Q&A pair)
        → trigger_processor() (background)
          → qwen_processor (lock → start llama-server → tagging → stop server)
            → obsidian_writer (daily note, concept note, _MOC.md generation)
@@ -58,11 +58,12 @@ Priority: env vars → `~/.config/claude-knowledge-graph/config.json` → defaul
 
 ### qa_logger.py (Hook Handler)
 - Runs via `python3 -m claude_knowledge_graph.qa_logger`
-- Receives Claude Code hook JSON from stdin
-- **UserPromptSubmit**: appends prompt to `queue/{session_id}_prompt.json`
-- **Stop**: merges `last_assistant_message` + last prompt → generates Q&A pair JSON
+- Receives Claude Code or Gemini CLI hook JSON from stdin
+- **UserPromptSubmit / BeforeAgent**: appends prompt to `queue/{session_id}_prompt.json`
+- **Stop / AfterAgent**: merges final assistant response + last prompt → generates Q&A pair JSON
 - `stop_hook_active` check to prevent infinite loops
 - Always exit 0 (prevents blocking Claude Code)
+- Emits `{}` on stdout for Gemini hooks to satisfy strict JSON output requirements
 - `trigger_processor()`: checks fcntl lock, runs qwen_processor in background
 
 ### qwen_processor.py
@@ -84,15 +85,15 @@ Priority: env vars → `~/.config/claude-knowledge-graph/config.json` → defaul
 - Updates status to `written` after processing
 
 ### cli.py
-- `ckg init --vault-dir <path>`: creates config.json + directories + registers hooks + checks dependencies
+- `ckg init --vault-dir <path> [--hooks ...]`: creates config.json + directories + registers hooks + checks dependencies
 - `ckg run`: calls qwen_processor.main() (tagging + note generation)
-- `ckg status`: pending/processed/written counts + hooks status
-- `ckg uninstall`: unregisters hooks + optional config deletion
+- `ckg status`: pending/processed/written counts + per-platform hooks status
+- `ckg uninstall [--hooks ...]`: unregisters hooks + optional config deletion
 
 ### hooks.py
-- `register_hooks()`: adds ckg hooks to `~/.claude/settings.json` (preserves existing hooks)
+- `register_hooks()`: adds ckg hooks to `~/.claude/settings.json` and/or `~/.gemini/settings.json` (preserves existing hooks)
 - `unregister_hooks()`: removes only ckg hooks
-- `check_hooks()`: checks registration status
+- `check_hooks()`: checks registration status per platform
 - Identifies ckg hooks by `[claude-knowledge-graph]` description
 
 ## Design Decisions

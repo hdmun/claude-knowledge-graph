@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """Obsidian note writer: converts processed Q&A pairs to knowledge graph notes.
 
 Writes markdown files directly to the Obsidian vault directory.

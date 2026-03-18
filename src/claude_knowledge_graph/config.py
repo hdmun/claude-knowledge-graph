@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Configuration for claude-knowledge-graph.
 
 Resolution order: environment variable → config file → default value.

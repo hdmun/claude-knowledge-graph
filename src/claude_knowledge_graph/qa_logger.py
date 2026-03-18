@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Hook handler for Claude Code: captures Q&A pairs to queue.
+from __future__ import annotations
 
-Reads JSON from stdin, handles UserPromptSubmit and Stop events.
+"""Hook handler for Claude Code and Gemini CLI.
+
+Reads hook JSON from stdin and captures prompts and Q&A pairs to queue.
 Designed to be fast (file I/O only, no blocking calls).
 
 Usage as hook: python3 -m claude_knowledge_graph.qa_logger
@@ -154,7 +156,7 @@ def extract_full_response(transcript_path: str) -> str:
 
 
 def handle_stop(data: dict) -> None:
-    """Merge last assistant message with most recent prompt, create Q&A pair."""
+    """Merge assistant message with prompt, create Q&A pair."""
     session_id = data.get("session_id", "unknown")
     stop_hook_active = data.get("stop_hook_active", False)
 
@@ -163,23 +165,30 @@ def handle_stop(data: dict) -> None:
         log(f"stop_hook_active=True for session {session_id}, skipping")
         return
 
-    # Try full transcript first, fall back to last_assistant_message
     transcript_path = data.get("transcript_path", "")
-    response = extract_full_response(transcript_path)
+    response = data.get("response", "")
+    if not response:
+        response = data.get("prompt_response", "")
+    if not response:
+        response = extract_full_response(transcript_path)
     if not response:
         response = data.get("last_assistant_message", "")
     cwd = data.get("cwd", "")
     timestamp = datetime.now().isoformat()
+    direct_prompt = data.get("prompt", "")
 
     prompt_file = QUEUE_DIR / f"{session_id}_prompt.json"
 
     if not prompt_file.exists():
-        log(f"No prompt file for session {session_id}, saving response-only")
+        if direct_prompt.strip():
+            log(f"No prompt file for session {session_id}, using direct prompt from hook payload")
+        else:
+            log(f"No prompt file for session {session_id}, saving response-only")
         qa_entry = {
             "session_id": session_id,
             "timestamp": timestamp,
             "cwd": cwd,
-            "prompt": "",
+            "prompt": direct_prompt,
             "response": response,
             "status": "pending",
             "transcript_path": transcript_path,
@@ -211,7 +220,7 @@ def handle_stop(data: dict) -> None:
         "session_id": session_id,
         "timestamp": last_prompt.get("timestamp", timestamp),
         "cwd": last_prompt.get("cwd", cwd),
-        "prompt": last_prompt.get("prompt", ""),
+        "prompt": last_prompt.get("prompt", direct_prompt),
         "response": response,
         "status": "pending",
         "transcript_path": transcript_path,
@@ -263,28 +272,63 @@ def trigger_processor() -> None:
         log(f"Failed to trigger processor: {e}")
 
 
+def normalize_hook_payload(data: dict) -> dict:
+    """Normalize Claude Code and Gemini CLI hook payloads."""
+    event = data.get("hook_event_name", "")
+    normalized = {
+        **data,
+        "source_platform": "unknown",
+        "normalized_event": "",
+        "response": data.get("response", ""),
+    }
+
+    if event in {"UserPromptSubmit", "Stop"}:
+        normalized["source_platform"] = "claude"
+        normalized["normalized_event"] = (
+            "prompt_submitted" if event == "UserPromptSubmit" else "turn_completed"
+        )
+    elif event in {"BeforeAgent", "AfterAgent"}:
+        normalized["source_platform"] = "gemini"
+        normalized["normalized_event"] = (
+            "prompt_submitted" if event == "BeforeAgent" else "turn_completed"
+        )
+        if not normalized.get("response"):
+            normalized["response"] = data.get("prompt_response", "")
+
+    return normalized
+
+
+def exit_success(source_platform: str) -> None:
+    """Exit successfully, emitting valid JSON for Gemini hooks."""
+    if source_platform == "gemini":
+        sys.stdout.write("{}")
+    sys.exit(0)
+
+
 def main() -> None:
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
+    source_platform = "unknown"
 
     try:
         raw = sys.stdin.read()
         data = json.loads(raw)
     except (json.JSONDecodeError, Exception) as e:
         log(f"Failed to parse stdin: {e}")
-        sys.exit(0)  # Exit 0 to not block Claude Code
+        exit_success(source_platform)
 
+    data = normalize_hook_payload(data)
+    source_platform = data.get("source_platform", "unknown")
     event = data.get("hook_event_name", "")
     log(f"Received event: {event} (session: {data.get('session_id', 'unknown')})")
 
-    if event == "UserPromptSubmit":
+    if data.get("normalized_event") == "prompt_submitted":
         handle_prompt_submit(data)
-    elif event == "Stop":
+    elif data.get("normalized_event") == "turn_completed":
         handle_stop(data)
     else:
         log(f"Unknown event: {event}")
 
-    # Always exit 0 to not interfere with Claude Code
-    sys.exit(0)
+    exit_success(source_platform)
 
 
 if __name__ == "__main__":

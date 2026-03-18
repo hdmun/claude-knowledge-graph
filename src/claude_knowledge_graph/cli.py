@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from __future__ import annotations
+
 """CLI for claude-knowledge-graph.
 
 Commands:
@@ -27,8 +29,25 @@ from claude_knowledge_graph.config import (
 @click.group()
 @click.version_option(package_name="claude-knowledge-graph")
 def main():
-    """Auto-capture Claude Code Q&A → Qwen tagging → Obsidian knowledge graph."""
+    """Auto-capture Claude Code and Gemini CLI Q&A → Obsidian knowledge graph."""
     pass
+
+
+def _parse_hook_platforms(raw: str) -> tuple[str, ...]:
+    normalized = raw.strip().lower()
+    if normalized == "all":
+        return ("claude", "gemini")
+
+    platforms = tuple(
+        item.strip() for item in normalized.split(",") if item.strip()
+    )
+    valid = {"claude", "gemini"}
+    invalid = [item for item in platforms if item not in valid]
+    if invalid:
+        raise click.BadParameter(
+            f"Unsupported hooks platform(s): {', '.join(invalid)}. Use claude, gemini, or all."
+        )
+    return platforms or ("claude",)
 
 
 @main.command()
@@ -38,9 +57,17 @@ def main():
     type=click.Path(exists=False),
     help="Path to your Obsidian vault directory.",
 )
-def init(vault_dir: str):
-    """Initialize config, create directories, and register Claude Code hooks."""
+@click.option(
+    "--hooks",
+    "hooks_target",
+    default="all",
+    show_default=True,
+    help="Which CLI hooks to manage: claude, gemini, comma-separated list, or all.",
+)
+def init(vault_dir: str, hooks_target: str):
+    """Initialize config, create directories, and register CLI hooks."""
     vault_path = Path(vault_dir).expanduser().resolve()
+    hook_platforms = _parse_hook_platforms(hooks_target)
 
     # 1. Create config file
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -69,17 +96,17 @@ def init(vault_dir: str):
     # 4. Register hooks
     from claude_knowledge_graph.hooks import register_hooks
 
-    if register_hooks():
-        click.echo("Claude Code hooks registered.")
+    if register_hooks(hook_platforms):
+        click.echo(f"Hooks registered: {', '.join(hook_platforms)}")
     else:
-        click.echo("Claude Code hooks already registered.")
+        click.echo(f"Hooks already registered: {', '.join(hook_platforms)}")
 
     # 5. Check dependencies
     click.echo("")
     _check_dependencies()
 
     click.echo("")
-    click.echo("Setup complete! Claude Code will now capture Q&A pairs automatically.")
+    click.echo("Setup complete! Supported CLI hooks will now capture Q&A pairs automatically.")
     click.echo("Run 'ckg run' to process pending entries, or they'll be processed automatically.")
 
 
@@ -196,24 +223,39 @@ def status():
     click.echo("")
     from claude_knowledge_graph.hooks import check_hooks
 
-    hook_status = check_hooks()
-    all_ok = all(hook_status.values())
+    hook_status = check_hooks(("claude", "gemini"))
+    all_ok = all(
+        registered
+        for platform_status in hook_status.values()
+        for registered in platform_status.values()
+    )
     click.echo(f"Hooks: {'all registered' if all_ok else 'MISSING'}")
-    if not all_ok:
-        for event, registered in hook_status.items():
+    for platform, platform_status in hook_status.items():
+        platform_ok = all(platform_status.values())
+        click.echo(f"  {platform}: {'ok' if platform_ok else 'missing'}")
+        for event, registered in platform_status.items():
             if not registered:
-                click.echo(f"  {event}: not registered (run 'ckg init' to fix)")
+                click.echo(f"    {event}: not registered (run 'ckg init --hooks {platform}' to fix)")
 
 
 @main.command()
-def uninstall():
-    """Remove Claude Code hooks and clean up config."""
+@click.option(
+    "--hooks",
+    "hooks_target",
+    default="all",
+    show_default=True,
+    help="Which CLI hooks to remove: claude, gemini, comma-separated list, or all.",
+)
+def uninstall(hooks_target: str):
+    """Remove CLI hooks and clean up config."""
     from claude_knowledge_graph.hooks import unregister_hooks
 
-    if unregister_hooks():
-        click.echo("Claude Code hooks removed.")
+    hook_platforms = _parse_hook_platforms(hooks_target)
+
+    if unregister_hooks(hook_platforms):
+        click.echo(f"Hooks removed: {', '.join(hook_platforms)}")
     else:
-        click.echo("No hooks to remove.")
+        click.echo(f"No hooks to remove for: {', '.join(hook_platforms)}")
 
     # Ask before removing config
     if CONFIG_FILE.exists():

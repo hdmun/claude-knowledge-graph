@@ -1,20 +1,23 @@
-"""Manage Claude Code hooks registration for claude-knowledge-graph.
+from __future__ import annotations
 
-Reads/writes ~/.claude/settings.json to add or remove ckg hooks
-while preserving existing user hooks.
+"""Manage Claude Code and Gemini CLI hook registration.
+
+Reads/writes CLI settings files to add or remove ckg hooks while preserving
+existing user hooks.
 """
 
 import json
 from pathlib import Path
 
-SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
+GEMINI_SETTINGS_PATH = Path.home() / ".gemini" / "settings.json"
 
 # Marker to identify hooks managed by ckg
 CKG_MARKER = "claude-knowledge-graph"
 
 HOOK_COMMAND = "python3 -m claude_knowledge_graph.qa_logger"
 
-HOOKS_CONFIG = {
+CLAUDE_HOOKS_CONFIG = {
     "UserPromptSubmit": {
         "matcher": "",
         "hooks": [
@@ -37,25 +40,78 @@ HOOKS_CONFIG = {
     },
 }
 
+GEMINI_HOOKS_CONFIG = {
+    "BeforeAgent": {
+        "hooks": [
+            {
+                "type": "command",
+                "command": HOOK_COMMAND,
+                "name": "ckg-capture-prompt",
+                "timeout": 5000,
+                "description": f"[{CKG_MARKER}] Capture user prompts",
+            }
+        ],
+    },
+    "AfterAgent": {
+        "hooks": [
+            {
+                "type": "command",
+                "command": HOOK_COMMAND,
+                "name": "ckg-capture-response",
+                "timeout": 5000,
+                "description": f"[{CKG_MARKER}] Capture Q&A pairs",
+            }
+        ],
+    },
+}
 
-def _load_settings() -> dict:
-    """Load Claude Code settings, creating file if needed."""
-    if SETTINGS_PATH.exists():
+PLATFORMS = ("claude", "gemini")
+
+
+def _load_settings(path: Path) -> dict:
+    """Load CLI settings, creating an empty structure if needed."""
+    if path.exists():
         try:
-            return json.loads(SETTINGS_PATH.read_text())
+            return json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
             pass
     return {}
 
 
-def _save_settings(settings: dict) -> None:
-    """Save Claude Code settings."""
-    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+def _save_settings(path: Path, settings: dict) -> None:
+    """Save CLI settings."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
+
+
+def _platform_path(platform: str) -> Path:
+    if platform == "claude":
+        return CLAUDE_SETTINGS_PATH
+    if platform == "gemini":
+        return GEMINI_SETTINGS_PATH
+    raise ValueError(f"Unsupported hooks platform: {platform}")
+
+
+def _platform_hooks_config(platform: str) -> dict[str, dict]:
+    if platform == "claude":
+        return CLAUDE_HOOKS_CONFIG
+    if platform == "gemini":
+        return GEMINI_HOOKS_CONFIG
+    raise ValueError(f"Unsupported hooks platform: {platform}")
+
+
+def _normalize_platforms(platforms: tuple[str, ...] | list[str] | None) -> tuple[str, ...]:
+    if platforms is None:
+        return ("claude",)
+    normalized = tuple(dict.fromkeys(platforms))
+    invalid = [platform for platform in normalized if platform not in PLATFORMS]
+    if invalid:
+        raise ValueError(f"Unsupported hooks platform(s): {', '.join(invalid)}")
+    return normalized
 
 
 def _is_ckg_matcher_group(group: dict) -> bool:
-    """Check if a matcher group belongs to ckg.
+    """Check if a matcher group or hook belongs to ckg.
 
     Also detects legacy flat-format hooks ({type, command, description})
     so they can be cleaned up during unregister.
@@ -75,16 +131,18 @@ def _is_ckg_matcher_group(group: dict) -> bool:
     return False
 
 
-def register_hooks() -> bool:
-    """Register ckg hooks in Claude Code settings.
+def _register_hooks_for_platform(platform: str) -> bool:
+    """Register ckg hooks for one platform.
 
     Returns True if hooks were added, False if already present.
     """
-    settings = _load_settings()
+    settings_path = _platform_path(platform)
+    hooks_config = _platform_hooks_config(platform)
+    settings = _load_settings(settings_path)
     hooks = settings.setdefault("hooks", {})
     changed = False
 
-    for event_name, hook_config in HOOKS_CONFIG.items():
+    for event_name, hook_config in hooks_config.items():
         event_hooks = hooks.setdefault(event_name, [])
 
         # Check if ckg hook already exists for this event
@@ -94,17 +152,18 @@ def register_hooks() -> bool:
             changed = True
 
     if changed:
-        _save_settings(settings)
+        _save_settings(settings_path, settings)
 
     return changed
 
 
-def unregister_hooks() -> bool:
-    """Remove ckg hooks from Claude Code settings.
+def _unregister_hooks_for_platform(platform: str) -> bool:
+    """Remove ckg hooks from one platform settings file.
 
     Returns True if hooks were removed, False if none found.
     """
-    settings = _load_settings()
+    settings_path = _platform_path(platform)
+    settings = _load_settings(settings_path)
     hooks = settings.get("hooks", {})
     changed = False
 
@@ -121,22 +180,49 @@ def unregister_hooks() -> bool:
     if changed:
         if not hooks:
             settings.pop("hooks", None)
-        _save_settings(settings)
+        _save_settings(settings_path, settings)
 
     return changed
 
 
-def check_hooks() -> dict[str, bool]:
-    """Check which ckg hooks are currently registered.
+def _check_hooks_for_platform(platform: str) -> dict[str, bool]:
+    """Check which ckg hooks are registered for one platform.
 
     Returns dict mapping event name to registration status.
     """
-    settings = _load_settings()
+    settings = _load_settings(_platform_path(platform))
+    hooks_config = _platform_hooks_config(platform)
     hooks = settings.get("hooks", {})
 
     status = {}
-    for event_name in HOOKS_CONFIG:
+    for event_name in hooks_config:
         event_hooks = hooks.get(event_name, [])
         status[event_name] = any(_is_ckg_matcher_group(h) for h in event_hooks)
 
     return status
+
+
+def register_hooks(platforms: tuple[str, ...] | list[str] | None = None) -> bool:
+    """Register ckg hooks for one or more platforms."""
+    changed = False
+    for platform in _normalize_platforms(platforms):
+        if _register_hooks_for_platform(platform):
+            changed = True
+    return changed
+
+
+def unregister_hooks(platforms: tuple[str, ...] | list[str] | None = None) -> bool:
+    """Unregister ckg hooks for one or more platforms."""
+    changed = False
+    for platform in _normalize_platforms(platforms):
+        if _unregister_hooks_for_platform(platform):
+            changed = True
+    return changed
+
+
+def check_hooks(platforms: tuple[str, ...] | list[str] | None = None) -> dict[str, dict[str, bool]]:
+    """Check ckg hook registration status by platform."""
+    return {
+        platform: _check_hooks_for_platform(platform)
+        for platform in _normalize_platforms(platforms)
+    }
