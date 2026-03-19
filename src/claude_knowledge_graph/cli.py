@@ -89,7 +89,7 @@ def init(vault_dir: str, hooks_target: str):
 
     # 3. Create vault knowledge-graph directory
     kg_dir = vault_path / "knowledge-graph"
-    for sub in ["daily", "concepts", "sessions"]:
+    for sub in ["daily", "concepts", "projects"]:
         (kg_dir / sub).mkdir(parents=True, exist_ok=True)
     click.echo(f"Knowledge graph directory: {kg_dir}")
 
@@ -199,11 +199,12 @@ def run():
 def status():
     """Show counts of pending, processed, and written Q&A pairs."""
     counts = {"pending": 0, "processed": 0, "written": 0}
+    project_counts: dict[str, dict[str, int]] = {}
 
     for directory, expected_status in [(QUEUE_DIR, "pending"), (PROCESSED_DIR, None)]:
         if not directory.exists():
             continue
-        for f in directory.glob("*.json"):
+        for f in directory.rglob("*.json"):
             if f.stem.endswith("_prompt"):
                 continue
             try:
@@ -211,6 +212,18 @@ def status():
                 s = data.get("status", "unknown")
                 if s in counts:
                     counts[s] += 1
+                    project_name = data.get("project_name") or "legacy"
+                    project_slug = data.get("project_slug")
+                    project_label = (
+                        f"{project_name} ({project_slug})"
+                        if project_slug
+                        else project_name
+                    )
+                    project_bucket = project_counts.setdefault(
+                        project_label,
+                        {"pending": 0, "processed": 0, "written": 0},
+                    )
+                    project_bucket[s] += 1
             except (json.JSONDecodeError, OSError):
                 continue
 
@@ -218,6 +231,20 @@ def status():
     click.echo(f"Processed: {counts['processed']}")
     click.echo(f"Written:   {counts['written']}")
     click.echo(f"Total:     {sum(counts.values())}")
+
+    if project_counts:
+        click.echo("")
+        click.echo("By project:")
+        for project_name in sorted(project_counts):
+            project = project_counts[project_name]
+            total = project["pending"] + project["processed"] + project["written"]
+            click.echo(
+                f"  {project_name}: "
+                f"{project['pending']} pending, "
+                f"{project['processed']} processed, "
+                f"{project['written']} written "
+                f"(total {total})"
+            )
 
     # Show hooks status
     click.echo("")

@@ -19,9 +19,10 @@ from claude_knowledge_graph.config import (
     KNOWLEDGE_GRAPH_DIR,
     LOGS_DIR,
     MOC_PATH,
+    PROJECTS_DIR,
     PROCESSED_DIR,
-    SESSIONS_DIR,
 )
+from claude_knowledge_graph.project_context import project_metadata
 
 LOG_FILE = LOGS_DIR / "obsidian_writer.log"
 
@@ -52,7 +53,33 @@ def truncate(text: str, max_len: int = 500) -> str:
 def get_processed_files() -> list[Path]:
     """Get all processed Q&A pair files."""
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    return sorted(PROCESSED_DIR.glob("*.json"))
+    return sorted(PROCESSED_DIR.rglob("*.json"))
+
+
+def _qa_project_meta(qa: dict) -> dict[str, str]:
+    meta = project_metadata(
+        qa.get("project_root") or qa.get("cwd", ""),
+        qa.get("source_platform", "unknown"),
+    )
+    meta["project_root"] = qa.get("project_root") or meta["project_root"]
+    meta["project_slug"] = qa.get("project_slug") or meta["project_slug"]
+    meta["project_name"] = qa.get("project_name") or meta["project_name"]
+    meta["source_platform"] = qa.get("source_platform") or meta["source_platform"]
+    return meta
+
+
+def session_link_target(qa: dict) -> str:
+    """Return the Obsidian wikilink target for a session note."""
+    meta = _qa_project_meta(qa)
+    return f"projects/{meta['project_slug']}/sessions/{session_filename(qa)}"
+
+
+def session_link(qa: dict, alias: str | None = None) -> str:
+    """Build a session note wikilink."""
+    target = session_link_target(qa)
+    if alias:
+        return f"[[{target}|{alias}]]"
+    return f"[[{target}]]"
 
 
 # ── Step 1: Session filename helper ──
@@ -110,9 +137,9 @@ def compute_similarity(qa1: dict, qa2: dict) -> tuple[float, list[str]]:
         reasons.append(f"same category: {cat1}")
 
     # Same cwd (project): 0.2
-    cwd1 = qa1.get("cwd", "").replace("\\", "/")
-    cwd2 = qa2.get("cwd", "").replace("\\", "/")
-    if cwd1 and cwd2 and cwd1 == cwd2:
+    meta1 = _qa_project_meta(qa1)
+    meta2 = _qa_project_meta(qa2)
+    if meta1["project_slug"] and meta1["project_slug"] == meta2["project_slug"]:
         score += 0.2
         reasons.append("same project")
 
@@ -124,7 +151,7 @@ def compute_similarity(qa1: dict, qa2: dict) -> tuple[float, list[str]]:
 
 def build_session_relations(
     qa_list: list[dict],
-) -> dict[str, list[tuple[str, float, list[str]]]]:
+) -> dict[str, list[tuple[dict, float, list[str]]]]:
     """Map each session filename to 'See Also' entries based on similarity.
 
     Returns {filename: [(other_filename, score, reasons), ...]}.
@@ -134,27 +161,27 @@ def build_session_relations(
         return {}
 
     # Pre-compute filenames
-    fnames = [session_filename(qa) for qa in qa_list]
+    targets = [session_link_target(qa) for qa in qa_list]
 
     # Compute all pairwise similarities
-    pairs: dict[str, list[tuple[str, float, list[str]]]] = defaultdict(list)
+    pairs: dict[str, list[tuple[dict, float, list[str]]]] = defaultdict(list)
     for i in range(len(qa_list)):
         for j in range(i + 1, len(qa_list)):
             score, reasons = compute_similarity(qa_list[i], qa_list[j])
             if score >= 0.6:
-                pairs[fnames[i]].append((fnames[j], score, reasons))
-                pairs[fnames[j]].append((fnames[i], score, reasons))
+                pairs[targets[i]].append((qa_list[j], score, reasons))
+                pairs[targets[j]].append((qa_list[i], score, reasons))
 
     # Apply tiered cap: strong (>=0.8) unlimited, moderate (0.6-0.8) max 5
-    result: dict[str, list[tuple[str, float, list[str]]]] = {}
-    for fname, matches in pairs.items():
+    result: dict[str, list[tuple[dict, float, list[str]]]] = {}
+    for target, matches in pairs.items():
         strong = [(m, s, r) for m, s, r in matches if s >= 0.8]
         moderate = sorted(
             [(m, s, r) for m, s, r in matches if s < 0.8],
             key=lambda x: x[1],
             reverse=True,
         )[:5]
-        result[fname] = sorted(strong + moderate, key=lambda x: x[1], reverse=True)
+        result[target] = sorted(strong + moderate, key=lambda x: x[1], reverse=True)
 
     return result
 
@@ -163,13 +190,14 @@ def build_session_relations(
 
 
 def write_session_note(
-    qa: dict, see_also: list[tuple[str, float, list[str]]]
+    qa: dict, see_also: list[tuple[dict, float, list[str]]]
 ) -> Path:
     """Write an individual session note to sessions/ directory."""
-    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
-
+    meta = _qa_project_meta(qa)
+    sessions_dir = PROJECTS_DIR / meta["project_slug"] / "sessions"
+    sessions_dir.mkdir(parents=True, exist_ok=True)
     fname = session_filename(qa)
-    session_file = SESSIONS_DIR / f"{fname}.md"
+    session_file = sessions_dir / f"{fname}.md"
 
     qwen = qa.get("qwen_result", {})
     title = qwen.get("title", "Untitled")
@@ -180,7 +208,11 @@ def write_session_note(
     prompt = qa.get("prompt", "")
     response = qa.get("response", "")
     session_id = qa.get("session_id", "")
-    cwd = qa.get("cwd", "").replace("\\", "/")
+    cwd = meta["cwd"].replace("\\", "/")
+    project_root = meta["project_root"].replace("\\", "/")
+    project_slug = meta["project_slug"]
+    project_name = meta["project_name"]
+    source_platform = meta["source_platform"]
 
     ts = qa.get("timestamp", "")
     try:
@@ -211,9 +243,10 @@ def write_session_note(
     see_also_lines = ""
     if see_also:
         lines = []
-        for other_fname, _score, reasons in see_also:
+        for other_qa, _score, reasons in see_also:
+            other_name = session_filename(other_qa)
             reason_str = " — " + "; ".join(reasons) if reasons else ""
-            lines.append(f"- [[{other_fname}]]{reason_str}")
+            lines.append(f"- {session_link(other_qa, other_name)}{reason_str}")
         see_also_lines = "\n## See Also\n\n" + "\n".join(lines) + "\n"
 
     # Session Activity section
@@ -237,10 +270,14 @@ title: "{title}"
 date: {date_str}
 time: "{time_str}"
 session_id: {session_id}
+source_platform: {source_platform}
 category: {category}
 tags:
 {tags_yaml}
 type: session
+project_name: "{project_name}"
+project_slug: "{project_slug}"
+project_root: "{project_root}"
 cwd: "{cwd}"{tool_frontmatter}
 ---
 
@@ -254,7 +291,7 @@ cwd: "{cwd}"{tool_frontmatter}
 
 **Key Concepts**: {concepts_str}
 
-**Project**: `{cwd}`
+**Project**: `{project_name}` (`{project_root}`)
 {activity_section}{see_also_lines}
 ## Conversation
 
@@ -276,6 +313,7 @@ def build_daily_entry(qa: dict) -> str:
     qwen = qa.get("qwen_result", {})
     tags = qwen.get("tags", [])
     category = qwen.get("category", "other")
+    meta = _qa_project_meta(qa)
 
     ts = qa.get("timestamp", "")
     try:
@@ -283,10 +321,13 @@ def build_daily_entry(qa: dict) -> str:
     except (ValueError, TypeError):
         time_str = "00:00"
 
-    fname = session_filename(qa)
     tags_preview = " ".join(f"#{t}" for t in tags[:3]) if tags else ""
+    alias = session_filename(qa)
 
-    return f"- [{time_str}] [[{fname}]] — {category}, {tags_preview}"
+    return (
+        f"- [{time_str}] {session_link(qa, alias)} — "
+        f"{meta['project_name']}, {category}, {tags_preview}"
+    )
 
 
 # ── Step 6: Daily note with "Today's Concepts" ──
@@ -353,7 +394,12 @@ def build_concept_relations(
     seen_pairs: dict[str, list[str]] = defaultdict(list)
     for concept, refs in concept_refs.items():
         for ref in refs:
-            pair_id = f"{ref.get('session_id', '')}_{ref.get('timestamp', '')}"
+            pair_id = (
+                f"{ref.get('project_slug', '')}_"
+                f"{ref.get('source_platform', '')}_"
+                f"{ref.get('session_id', '')}_"
+                f"{ref.get('timestamp', '')}"
+            )
             seen_pairs[pair_id].append(concept)
 
     for pair_id, concepts in seen_pairs.items():
@@ -408,7 +454,7 @@ def write_concept_note(
         qwen = ref.get("qwen_result", {})
         cat = qwen.get("category", "other")
         fname = session_filename(ref)
-        link = f"- [[{fname}]]"
+        link = f"- {session_link(ref, fname)}"
         by_category[cat].append(link)
 
     ref_section_parts = []
@@ -498,7 +544,9 @@ def update_moc(
             existing_dailies.add(match.group(1))
         for match in re.finditer(r"\[\[concepts/([^\]]+)\]\]", existing):
             existing_concepts.add(match.group(1))
-        for match in re.finditer(r"\[\[sessions/([^\]]+)\]\]", existing):
+        for match in re.finditer(r"\[\[(projects/[^|\]]+/sessions/[^\]|]+)(?:\|[^\]]+)?\]\]", existing):
+            existing_sessions.add(match.group(1))
+        for match in re.finditer(r"\[\[(sessions/[^\]|]+)(?:\|[^\]]+)?\]\]", existing):
             existing_sessions.add(match.group(1))
 
     for d in daily_files:
@@ -515,7 +563,7 @@ def update_moc(
 
     daily_links = "\n".join(f"- [[daily/{d}]]" for d in sorted_dailies)
     concept_links = "\n".join(f"- [[concepts/{c}]]" for c in sorted_concepts)
-    session_links = "\n".join(f"- [[sessions/{s}]]" for s in sorted_sessions)
+    session_links = "\n".join(f"- [[{s}]]" for s in sorted_sessions)
 
     content = f"""---
 title: Knowledge Graph - Map of Content
@@ -583,6 +631,12 @@ def main() -> None:
             continue
 
         all_qa.append(qa)
+        meta = _qa_project_meta(qa)
+        qa["cwd"] = meta["cwd"]
+        qa["project_root"] = meta["project_root"]
+        qa["project_slug"] = meta["project_slug"]
+        qa["project_name"] = meta["project_name"]
+        qa["source_platform"] = meta["source_platform"]
 
         ts = qa.get("timestamp", "")
         try:
@@ -609,11 +663,11 @@ def main() -> None:
 
     # Write individual session notes
     for qa in all_qa:
-        fname = session_filename(qa)
+        fname = session_link_target(qa)
         see_also = session_rels.get(fname, [])
         session_path = write_session_note(qa, see_also)
         written_sessions.append(fname)
-        log(f"Wrote session note: {session_path.name}")
+        log(f"Wrote session note: {session_path.relative_to(KNOWLEDGE_GRAPH_DIR)}")
 
     # Write daily notes (index format)
     for date_str, entries in daily_entries.items():

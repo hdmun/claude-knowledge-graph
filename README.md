@@ -37,9 +37,10 @@ Claude Code / Gemini CLI session
                     │
                     ▼
             Obsidian vault/knowledge-graph/
-            ├── _MOC.md              (Map of Content)
-            ├── daily/YYYY-MM-DD.md  (daily conversation log)
-            └── concepts/*.md        (concept notes, wikilink connected)
+            ├── _MOC.md                       (Map of Content)
+            ├── daily/YYYY-MM-DD.md           (daily conversation log)
+            ├── concepts/*.md                 (concept notes, wikilink connected)
+            └── projects/<project>/sessions/  (project-scoped session notes)
 ```
 
 ## Installation
@@ -135,6 +136,7 @@ This command will:
 - Create `~/.local/share/claude-knowledge-graph/{queue,processed,logs}` directories
 - Auto-register hooks in `~/.claude/settings.json`
 - Auto-register hooks in `~/.gemini/settings.json`
+- Store new captures under per-project queue/processed subdirectories
 - Verify llama-server and model paths
 
 Gemini CLI notes:
@@ -163,7 +165,7 @@ ckg uninstall
 |---------|-------------|
 | `ckg init --vault-dir <path> [--hooks all\|claude\|gemini]` | Create config + register hooks |
 | `ckg run` | Run pipeline (Qwen tagging → Obsidian notes) |
-| `ckg status` | Show pending/processed/written counts + hooks status |
+| `ckg status` | Show pending/processed/written counts, per-project totals, and hooks status |
 | `ckg uninstall [--hooks all\|claude\|gemini]` | Unregister hooks + optionally delete config |
 
 ## Configuration
@@ -204,11 +206,20 @@ your-vault/knowledge-graph/
 ├── daily/
 │   ├── 2026-03-10.md          # Daily conversation log
 │   └── 2026-03-11.md
+├── projects/
+│   ├── repo-a-ab12cd34/
+│   │   └── sessions/
+│   │       └── 2026-03-10_Debugging_FastAPI.md
+│   └── repo-b-ef56ab78/
+│       └── sessions/
+│           └── 2026-03-10_Refactoring_Hooks.md
 └── concepts/
     ├── Python Virtual Environments.md  # Concept note (wikilink connected)
     ├── Docker.md
     └── REST API.md
 ```
+
+Session notes are namespaced per project using the Git repo root when available, with `cwd` as a fallback. Daily logs and concept notes remain global inside one vault, so cross-project history still aggregates cleanly.
 
 Each concept note is connected to related concepts via wikilinks, allowing you to visually explore the knowledge graph in Obsidian's graph view.
 

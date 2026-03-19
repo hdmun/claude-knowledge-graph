@@ -31,6 +31,7 @@ from claude_knowledge_graph.config import (
     PROCESSED_DIR,
     QUEUE_DIR,
 )
+from claude_knowledge_graph.project_context import project_metadata
 
 LOG_FILE = LOGS_DIR / "qwen_processor.log"
 
@@ -142,7 +143,7 @@ def get_pending_files() -> list[Path]:
     """Get all pending Q&A pair files from the queue."""
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     files = []
-    for f in sorted(QUEUE_DIR.glob("*.json")):
+    for f in sorted(QUEUE_DIR.rglob("*.json")):
         if f.stem.endswith("_prompt"):
             continue
         try:
@@ -358,6 +359,16 @@ def process_file(filepath: Path) -> bool:
     if transcript_path:
         tool_summary = extract_tool_summary(transcript_path)
 
+    meta = project_metadata(
+        qa.get("project_root") or qa.get("cwd", ""),
+        qa.get("source_platform", "unknown"),
+    )
+    qa["cwd"] = meta["cwd"]
+    qa["project_root"] = qa.get("project_root") or meta["project_root"]
+    qa["project_slug"] = qa.get("project_slug") or meta["project_slug"]
+    qa["project_name"] = qa.get("project_name") or meta["project_name"]
+    qa["source_platform"] = qa.get("source_platform") or meta["source_platform"]
+
     prompt = build_tagging_prompt(qa, tool_summary)
     result = call_qwen(prompt)
 
@@ -373,8 +384,10 @@ def process_file(filepath: Path) -> bool:
     qa["processed_at"] = datetime.now().isoformat()
 
     # Save to processed directory
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    out_file = PROCESSED_DIR / filepath.name
+    project_slug = qa.get("project_slug", "")
+    out_dir = PROCESSED_DIR / project_slug if project_slug else PROCESSED_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_file = out_dir / filepath.name
     out_file.write_text(json.dumps(qa, ensure_ascii=False, indent=2))
 
     # Remove from queue
@@ -390,7 +403,7 @@ def cleanup_orphan_prompts() -> None:
     """Remove _prompt.json files older than ORPHAN_MAX_AGE_SECONDS."""
     now = time.time()
     removed = 0
-    for f in QUEUE_DIR.glob("*_prompt.json"):
+    for f in QUEUE_DIR.rglob("*_prompt.json"):
         age = now - f.stat().st_mtime
         if age > ORPHAN_MAX_AGE_SECONDS:
             f.unlink()

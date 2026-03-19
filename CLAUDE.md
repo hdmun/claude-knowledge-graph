@@ -14,6 +14,7 @@ claude-knowledge-graph/
 │   └── claude_knowledge_graph/
 │       ├── __init__.py         # __version__
 │       ├── config.py           # env vars → config.json → defaults
+│       ├── project_context.py  # repo root detection + project slugging
 │       ├── qa_logger.py        # Hook handler (Claude/Gemini stdin JSON → queue/)
 │       ├── qwen_processor.py   # llama-server + OpenAI API tagging
 │       ├── obsidian_writer.py  # Obsidian markdown generation
@@ -29,11 +30,12 @@ claude-knowledge-graph/
 
 ```
 Claude Code / Gemini CLI session
-  ├─ UserPromptSubmit or BeforeAgent → qa_logger → queue/{session}_prompt.json
-  └─ Stop or AfterAgent → qa_logger → queue/{ts}_{session}.json (Q&A pair)
+  ├─ UserPromptSubmit or BeforeAgent → qa_logger → queue/{project}/{platform}_{session}_prompt.json
+  └─ Stop or AfterAgent → qa_logger → queue/{project}/{ts}_{platform}_{session}.json (Q&A pair)
        → trigger_processor() (background)
          → qwen_processor (lock → start llama-server → tagging → stop server)
-           → obsidian_writer (daily note, concept note, _MOC.md generation)
+           → processed/{project}/...
+           → obsidian_writer (daily note, concept note, projects/{project}/sessions, _MOC.md generation)
              → release lock
 ```
 
@@ -59,7 +61,8 @@ Priority: env vars → `~/.config/claude-knowledge-graph/config.json` → defaul
 ### qa_logger.py (Hook Handler)
 - Runs via `python3 -m claude_knowledge_graph.qa_logger`
 - Receives Claude Code or Gemini CLI hook JSON from stdin
-- **UserPromptSubmit / BeforeAgent**: appends prompt to `queue/{session_id}_prompt.json`
+- Resolves `project_root` from Git repo root if available, else `cwd`
+- **UserPromptSubmit / BeforeAgent**: appends prompt to `queue/{project_slug}/{platform}_{session_id}_prompt.json`
 - **Stop / AfterAgent**: merges final assistant response + last prompt → generates Q&A pair JSON
 - `stop_hook_active` check to prevent infinite loops
 - Always exit 0 (prevents blocking Claude Code)
@@ -67,19 +70,20 @@ Priority: env vars → `~/.config/claude-knowledge-graph/config.json` → defaul
 - `trigger_processor()`: checks fcntl lock, runs qwen_processor in background
 
 ### qwen_processor.py
-- Collects `status == "pending"` files from `queue/`
+- Collects `status == "pending"` files from `queue/` recursively
 - Starts `llama-server` → waits for health check (up to 60s)
 - Calls `http://127.0.0.1:{port}/v1/chat/completions` via OpenAI client
 - Uses `--chat-template-kwargs '{"enable_thinking": false}'` for non-thinking mode
 - Output: `{title, summary, tags, category, key_concepts}`
-- On completion → moves to `processed/`, stops server (frees VRAM)
-- `cleanup_orphan_prompts()`: removes orphan prompt files older than 1 hour
+- On completion → moves to `processed/{project_slug}/`, stops server (frees VRAM)
+- `cleanup_orphan_prompts()`: removes orphan prompt files older than 1 hour recursively
 - On success, auto-calls `obsidian_writer.main()`
 
 ### obsidian_writer.py
-- Reads `status == "processed"` files from `processed/`
+- Reads `status == "processed"` files from `processed/` recursively
 - **Daily note** (`daily/YYYY-MM-DD.md`): frontmatter + callout format conversation log
 - **Concept note** (`concepts/{name}.md`): per key_concept note, wikilinks to daily notes
+- **Session note** (`projects/{project_slug}/sessions/{name}.md`): project-scoped conversation note
 - **Related concept linking**: co-occurrence (same Q&A pair) + shared tags (2+ shared)
 - **_MOC.md**: full daily/concept table of contents (Map of Content)
 - Updates status to `written` after processing
@@ -87,7 +91,7 @@ Priority: env vars → `~/.config/claude-knowledge-graph/config.json` → defaul
 ### cli.py
 - `ckg init --vault-dir <path> [--hooks ...]`: creates config.json + directories + registers hooks + checks dependencies
 - `ckg run`: calls qwen_processor.main() (tagging + note generation)
-- `ckg status`: pending/processed/written counts + per-platform hooks status
+- `ckg status`: pending/processed/written counts + per-project totals + per-platform hooks status
 - `ckg uninstall [--hooks ...]`: unregisters hooks + optional config deletion
 
 ### hooks.py
@@ -119,6 +123,10 @@ ckg status
   "session_id": "abc123",
   "timestamp": "2026-03-10T14:30:00",
   "cwd": "/path/to/project",
+  "project_root": "/path/to/project",
+  "project_slug": "project-ab12cd34",
+  "project_name": "project",
+  "source_platform": "claude | gemini",
   "prompt": "User question",
   "response": "AI response",
   "status": "pending | processed | written",

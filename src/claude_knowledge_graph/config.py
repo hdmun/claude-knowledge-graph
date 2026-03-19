@@ -53,6 +53,7 @@ VAULT_DIR = Path(_get("CKG_VAULT_DIR", "vault_dir", ""))
 KNOWLEDGE_GRAPH_DIR = VAULT_DIR / "knowledge-graph" if VAULT_DIR != Path("") else Path("")
 DAILY_DIR = KNOWLEDGE_GRAPH_DIR / "daily"
 CONCEPTS_DIR = KNOWLEDGE_GRAPH_DIR / "concepts"
+PROJECTS_DIR = KNOWLEDGE_GRAPH_DIR / "projects"
 SESSIONS_DIR = KNOWLEDGE_GRAPH_DIR / "sessions"
 MOC_PATH = KNOWLEDGE_GRAPH_DIR / "_MOC.md"
 

@@ -16,6 +16,7 @@ from datetime import datetime
 from pathlib import Path
 
 from claude_knowledge_graph.config import DATA_DIR, QUEUE_DIR, LOGS_DIR
+from claude_knowledge_graph.project_context import project_metadata, safe_session_token
 
 
 def log(msg: str) -> None:
@@ -30,8 +31,36 @@ def log(msg: str) -> None:
         pass
 
 
+def _prompt_file_path(data: dict) -> Path:
+    meta = project_metadata(
+        data.get("cwd", ""),
+        data.get("source_platform", "unknown"),
+    )
+    project_dir = QUEUE_DIR / meta["project_slug"]
+    project_dir.mkdir(parents=True, exist_ok=True)
+    session_token = safe_session_token(data.get("session_id", "unknown"))
+    return project_dir / f"{meta['source_platform']}_{session_token}_prompt.json"
+
+
+def _qa_output_path(data: dict) -> Path:
+    meta = project_metadata(
+        data.get("cwd", ""),
+        data.get("source_platform", "unknown"),
+    )
+    project_dir = QUEUE_DIR / meta["project_slug"]
+    project_dir.mkdir(parents=True, exist_ok=True)
+    session_token = safe_session_token(data.get("session_id", "unknown"))
+    ts_slug = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return project_dir / f"{ts_slug}_{meta['source_platform']}_{session_token}.json"
+
+
 def handle_prompt_submit(data: dict) -> None:
     """Save prompt to a temporary file keyed by session_id."""
+    meta = project_metadata(
+        data.get("cwd", ""),
+        data.get("source_platform", "unknown"),
+    )
+    data = {**data, **meta}
     session_id = data.get("session_id", "unknown")
     prompt = data.get("prompt", "")
     cwd = data.get("cwd", "")
@@ -41,12 +70,16 @@ def handle_prompt_submit(data: dict) -> None:
         log(f"Empty prompt from session {session_id}, skipping")
         return
 
-    prompt_file = QUEUE_DIR / f"{session_id}_prompt.json"
+    prompt_file = _prompt_file_path(data)
     entry = {
         "session_id": session_id,
         "timestamp": timestamp,
         "cwd": cwd,
         "prompt": prompt,
+        "project_root": data.get("project_root", ""),
+        "project_slug": data.get("project_slug", ""),
+        "project_name": data.get("project_name", ""),
+        "source_platform": data.get("source_platform", "unknown"),
     }
 
     # Append to list of prompts for this session
@@ -157,6 +190,11 @@ def extract_full_response(transcript_path: str) -> str:
 
 def handle_stop(data: dict) -> None:
     """Merge assistant message with prompt, create Q&A pair."""
+    meta = project_metadata(
+        data.get("cwd", ""),
+        data.get("source_platform", "unknown"),
+    )
+    data = {**data, **meta}
     session_id = data.get("session_id", "unknown")
     stop_hook_active = data.get("stop_hook_active", False)
 
@@ -177,7 +215,7 @@ def handle_stop(data: dict) -> None:
     timestamp = datetime.now().isoformat()
     direct_prompt = data.get("prompt", "")
 
-    prompt_file = QUEUE_DIR / f"{session_id}_prompt.json"
+    prompt_file = _prompt_file_path(data)
 
     if not prompt_file.exists():
         if direct_prompt.strip():
@@ -192,9 +230,12 @@ def handle_stop(data: dict) -> None:
             "response": response,
             "status": "pending",
             "transcript_path": transcript_path,
+            "project_root": data.get("project_root", ""),
+            "project_slug": data.get("project_slug", ""),
+            "project_name": data.get("project_name", ""),
+            "source_platform": data.get("source_platform", "unknown"),
         }
-        ts_slug = datetime.now().strftime("%Y%m%d_%H%M%S")
-        out_file = QUEUE_DIR / f"{ts_slug}_{session_id}.json"
+        out_file = _qa_output_path(data)
         out_file.write_text(json.dumps(qa_entry, ensure_ascii=False, indent=2))
         return
 
@@ -224,10 +265,13 @@ def handle_stop(data: dict) -> None:
         "response": response,
         "status": "pending",
         "transcript_path": transcript_path,
+        "project_root": last_prompt.get("project_root", data.get("project_root", "")),
+        "project_slug": last_prompt.get("project_slug", data.get("project_slug", "")),
+        "project_name": last_prompt.get("project_name", data.get("project_name", "")),
+        "source_platform": last_prompt.get("source_platform", data.get("source_platform", "unknown")),
     }
 
-    ts_slug = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_file = QUEUE_DIR / f"{ts_slug}_{session_id}.json"
+    out_file = _qa_output_path(data)
     out_file.write_text(json.dumps(qa_entry, ensure_ascii=False, indent=2))
     log(f"Created Q&A pair: {out_file.name}")
 
