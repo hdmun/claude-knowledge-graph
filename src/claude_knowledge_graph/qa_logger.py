@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-"""Hook handler for Claude Code and Gemini CLI.
+"""Hook handler for Claude Code, Gemini CLI, and Codex CLI.
 
-Reads hook JSON from stdin and captures prompts and Q&A pairs to queue.
+Reads hook JSON from stdin (Claude/Gemini) or argv (Codex) and captures
+prompts and Q&A pairs to queue.
 Designed to be fast (file I/O only, no blocking calls).
 
-Usage as hook: python3 -m claude_knowledge_graph.qa_logger
+Usage as hook: python3 -m claude_knowledge_graph.qa_logger [json_payload]
 """
 
 import json
@@ -316,9 +317,28 @@ def trigger_processor() -> None:
         log(f"Failed to trigger processor: {e}")
 
 
+def _extract_content_text(content) -> str:
+    """Extract text from a message content field (string or structured blocks)."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict):
+                if block.get("type") == "text":
+                    parts.append(block.get("text", ""))
+                elif block.get("type") == "input_text":
+                    parts.append(block.get("text", ""))
+        return "\n".join(parts)
+    return str(content) if content else ""
+
+
 def normalize_hook_payload(data: dict) -> dict:
-    """Normalize Claude Code and Gemini CLI hook payloads."""
+    """Normalize Claude Code, Gemini CLI, and Codex CLI hook payloads."""
     event = data.get("hook_event_name", "")
+    codex_type = data.get("type", "")
     normalized = {
         **data,
         "source_platform": "unknown",
@@ -338,6 +358,21 @@ def normalize_hook_payload(data: dict) -> dict:
         )
         if not normalized.get("response"):
             normalized["response"] = data.get("prompt_response", "")
+    elif codex_type == "agent-turn-complete":
+        normalized["source_platform"] = "codex"
+        normalized["normalized_event"] = "turn_completed"
+        normalized["session_id"] = data.get("thread-id", "unknown")
+        # Extract prompt from last user message in input-messages
+        input_messages = data.get("input-messages", [])
+        last_user_prompt = ""
+        for msg in input_messages:
+            if msg.get("role") == "user":
+                last_user_prompt = _extract_content_text(msg.get("content", ""))
+        normalized["prompt"] = last_user_prompt
+        # Extract response
+        normalized["response"] = _extract_content_text(
+            data.get("last-assistant-message", "")
+        )
 
     return normalized
 
@@ -354,10 +389,13 @@ def main() -> None:
     source_platform = "unknown"
 
     try:
-        raw = sys.stdin.read()
+        if len(sys.argv) > 1:
+            raw = sys.argv[1]       # Codex: JSON via argv
+        else:
+            raw = sys.stdin.read()  # Claude/Gemini: JSON via stdin
         data = json.loads(raw)
     except (json.JSONDecodeError, Exception) as e:
-        log(f"Failed to parse stdin: {e}")
+        log(f"Failed to parse input: {e}")
         exit_success(source_platform)
 
     data = normalize_hook_payload(data)

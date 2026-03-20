@@ -1,6 +1,6 @@
 # claude-knowledge-graph
 
-Auto-capture Claude Code and Gemini CLI Q&A → Qwen 3.5 4B tagging/summarization → Obsidian knowledge graph.
+Auto-capture Claude Code, Gemini CLI & Codex CLI Q&A → Qwen 3.5 4B tagging/summarization → Obsidian knowledge graph.
 Package: `claude-knowledge-graph`, CLI: `ckg`
 
 ## Project Structure
@@ -15,11 +15,11 @@ claude-knowledge-graph/
 │       ├── __init__.py         # __version__
 │       ├── config.py           # env vars → config.json → defaults
 │       ├── project_context.py  # repo root detection + project slugging
-│       ├── qa_logger.py        # Hook handler (Claude/Gemini stdin JSON → queue/)
+│       ├── qa_logger.py        # Hook handler (Claude/Gemini stdin, Codex argv JSON → queue/)
 │       ├── qwen_processor.py   # llama-server + OpenAI API tagging
 │       ├── obsidian_writer.py  # Obsidian markdown generation
 │       ├── cli.py              # Click CLI: init/run/status/uninstall
-│       └── hooks.py            # ~/.claude/settings.json and ~/.gemini/settings.json hooks register/unregister
+│       └── hooks.py            # Claude/Gemini settings.json + Codex config.toml hooks register/unregister
 ├── scripts/
 │   └── gen_graph_image.py      # Graph visualization (optional, [graph] extra)
 └── docs/
@@ -30,13 +30,17 @@ claude-knowledge-graph/
 
 ```
 Claude Code / Gemini CLI session
-  ├─ UserPromptSubmit or BeforeAgent → qa_logger → queue/{project}/{platform}_{session}_prompt.json
-  └─ Stop or AfterAgent → qa_logger → queue/{project}/{ts}_{platform}_{session}.json (Q&A pair)
-       → trigger_processor() (background)
-         → qwen_processor (lock → start llama-server → tagging → stop server)
-           → processed/{project}/...
-           → obsidian_writer (daily note, concept note, projects/{project}/sessions, _MOC.md generation)
-             → release lock
+  ├─ UserPromptSubmit or BeforeAgent → qa_logger (stdin) → queue/{project}/{platform}_{session}_prompt.json
+  └─ Stop or AfterAgent → qa_logger (stdin) → queue/{project}/{ts}_{platform}_{session}.json (Q&A pair)
+
+Codex CLI session
+  └─ agent-turn-complete → qa_logger (argv) → queue/{project}/{ts}_codex_{session}.json (Q&A pair, single event)
+
+  → trigger_processor() (background)
+    → qwen_processor (lock → start llama-server → tagging → stop server)
+      → processed/{project}/...
+      → obsidian_writer (daily note, concept note, projects/{project}/sessions, _MOC.md generation)
+        → release lock
 ```
 
 ## Configuration (config.py)
@@ -59,11 +63,12 @@ Priority: env vars → `~/.config/claude-knowledge-graph/config.json` → defaul
 - `_find_gguf_model()`: env var → config → `DATA_DIR/models/` rglob
 
 ### qa_logger.py (Hook Handler)
-- Runs via `python3 -m claude_knowledge_graph.qa_logger`
-- Receives Claude Code or Gemini CLI hook JSON from stdin
+- Runs via `python3 -m claude_knowledge_graph.qa_logger [json_payload]`
+- Input: stdin (Claude/Gemini) or `sys.argv[1]` (Codex)
 - Resolves `project_root` from Git repo root if available, else `cwd`
 - **UserPromptSubmit / BeforeAgent**: appends prompt to `queue/{project_slug}/{platform}_{session_id}_prompt.json`
 - **Stop / AfterAgent**: merges final assistant response + last prompt → generates Q&A pair JSON
+- **agent-turn-complete** (Codex): single event with prompt+response, skips prompt file stage
 - `stop_hook_active` check to prevent infinite loops
 - Always exit 0 (prevents blocking Claude Code)
 - Emits `{}` on stdout for Gemini hooks to satisfy strict JSON output requirements
@@ -95,10 +100,11 @@ Priority: env vars → `~/.config/claude-knowledge-graph/config.json` → defaul
 - `ckg uninstall [--hooks ...]`: unregisters hooks + optional config deletion
 
 ### hooks.py
-- `register_hooks()`: adds ckg hooks to `~/.claude/settings.json` and/or `~/.gemini/settings.json` (preserves existing hooks)
+- `register_hooks()`: adds ckg hooks to `~/.claude/settings.json`, `~/.gemini/settings.json`, and/or `~/.codex/config.toml`
 - `unregister_hooks()`: removes only ckg hooks
 - `check_hooks()`: checks registration status per platform
-- Identifies ckg hooks by `[claude-knowledge-graph]` description
+- Identifies ckg hooks by `[claude-knowledge-graph]` description (Claude/Gemini) or `claude_knowledge_graph` in notify command (Codex)
+- Codex uses TOML config with a single `notify` command (not a hooks array); warns if non-ckg notify already exists
 
 ## Design Decisions
 
@@ -106,6 +112,7 @@ Priority: env vars → `~/.config/claude-knowledge-graph/config.json` → defaul
 - **Hook handler speed**: qa_logger uses minimal imports, always exit 0
 - **On-demand server**: llama-server starts/stops on `ckg run` (saves VRAM)
 - **Obsidian-native**: wikilinks, callouts, frontmatter, graph view compatible
+- **Codex single-event model**: Codex `agent-turn-complete` includes both prompt and response, so no separate prompt file stage is needed (handled via `handle_stop()` direct_prompt path)
 
 ## Development
 
@@ -126,7 +133,7 @@ ckg status
   "project_root": "/path/to/project",
   "project_slug": "project-ab12cd34",
   "project_name": "project",
-  "source_platform": "claude | gemini",
+  "source_platform": "claude | gemini | codex",
   "prompt": "User question",
   "response": "AI response",
   "status": "pending | processed | written",

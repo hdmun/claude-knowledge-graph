@@ -29,23 +29,23 @@ from claude_knowledge_graph.config import (
 @click.group()
 @click.version_option(package_name="claude-knowledge-graph")
 def main():
-    """Auto-capture Claude Code and Gemini CLI Q&A → Obsidian knowledge graph."""
+    """Auto-capture Claude Code, Gemini CLI & Codex CLI Q&A → Obsidian knowledge graph."""
     pass
 
 
 def _parse_hook_platforms(raw: str) -> tuple[str, ...]:
     normalized = raw.strip().lower()
     if normalized == "all":
-        return ("claude", "gemini")
+        return ("claude", "gemini", "codex")
 
     platforms = tuple(
         item.strip() for item in normalized.split(",") if item.strip()
     )
-    valid = {"claude", "gemini"}
+    valid = {"claude", "gemini", "codex"}
     invalid = [item for item in platforms if item not in valid]
     if invalid:
         raise click.BadParameter(
-            f"Unsupported hooks platform(s): {', '.join(invalid)}. Use claude, gemini, or all."
+            f"Unsupported hooks platform(s): {', '.join(invalid)}. Use claude, gemini, codex, or all."
         )
     return platforms or ("claude",)
 
@@ -62,7 +62,7 @@ def _parse_hook_platforms(raw: str) -> tuple[str, ...]:
     "hooks_target",
     default="all",
     show_default=True,
-    help="Which CLI hooks to manage: claude, gemini, comma-separated list, or all.",
+    help="Which CLI hooks to manage: claude, gemini, codex, comma-separated list, or all.",
 )
 def init(vault_dir: str, hooks_target: str):
     """Initialize config, create directories, and register CLI hooks."""
@@ -250,7 +250,7 @@ def status():
     click.echo("")
     from claude_knowledge_graph.hooks import check_hooks
 
-    hook_status = check_hooks(("claude", "gemini"))
+    hook_status = check_hooks(("claude", "gemini", "codex"))
     all_ok = all(
         registered
         for platform_status in hook_status.values()
@@ -271,7 +271,7 @@ def status():
     "hooks_target",
     default="all",
     show_default=True,
-    help="Which CLI hooks to remove: claude, gemini, comma-separated list, or all.",
+    help="Which CLI hooks to remove: claude, gemini, codex, comma-separated list, or all.",
 )
 def uninstall(hooks_target: str):
     """Remove CLI hooks and clean up config."""

@@ -1,21 +1,25 @@
 from __future__ import annotations
 
-"""Manage Claude Code and Gemini CLI hook registration.
+"""Manage Claude Code, Gemini CLI, and Codex CLI hook registration.
 
 Reads/writes CLI settings files to add or remove ckg hooks while preserving
 existing user hooks.
 """
 
 import json
+import re
+import sys
 from pathlib import Path
 
 CLAUDE_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 GEMINI_SETTINGS_PATH = Path.home() / ".gemini" / "settings.json"
+CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 
 # Marker to identify hooks managed by ckg
 CKG_MARKER = "claude-knowledge-graph"
 
 HOOK_COMMAND = "python3 -m claude_knowledge_graph.qa_logger"
+CODEX_NOTIFY_COMMAND = ["python3", "-m", "claude_knowledge_graph.qa_logger"]
 
 CLAUDE_HOOKS_CONFIG = {
     "UserPromptSubmit": {
@@ -65,7 +69,7 @@ GEMINI_HOOKS_CONFIG = {
     },
 }
 
-PLATFORMS = ("claude", "gemini")
+PLATFORMS = ("claude", "gemini", "codex")
 
 
 def _load_settings(path: Path) -> dict:
@@ -131,11 +135,110 @@ def _is_ckg_matcher_group(group: dict) -> bool:
     return False
 
 
+def _load_toml(path: Path) -> dict:
+    """Load a TOML file using tomllib (3.11+) or tomli (3.10)."""
+    if sys.version_info >= (3, 11):
+        import tomllib
+    else:
+        import tomli as tomllib
+    try:
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+    except (FileNotFoundError, OSError):
+        return {}
+
+
+def _read_toml_text(path: Path) -> str:
+    """Read raw TOML text for string manipulation."""
+    try:
+        return path.read_text()
+    except (FileNotFoundError, OSError):
+        return ""
+
+
+def _is_ckg_codex_notify(text: str) -> bool:
+    """Check if Codex config text contains a ckg notify command."""
+    return "claude_knowledge_graph" in text
+
+
+def _write_codex_notify(path: Path, command: list[str]) -> None:
+    """Add or replace the notify line in Codex config.toml."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = _read_toml_text(path)
+
+    # Format the command as a TOML array string
+    cmd_str = json.dumps(command)  # JSON array is valid TOML inline array
+    notify_line = f"notify = {cmd_str}\n"
+
+    if re.search(r"^notify\s*=", text, re.MULTILINE):
+        text = re.sub(r"^notify\s*=.*$", notify_line.rstrip(), text, flags=re.MULTILINE)
+    else:
+        # Append to end
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += notify_line
+
+    path.write_text(text)
+
+
+def _remove_codex_notify(path: Path) -> bool:
+    """Remove the notify line from Codex config.toml. Returns True if removed."""
+    text = _read_toml_text(path)
+    if not text:
+        return False
+    new_text = re.sub(r"^notify\s*=.*\n?", "", text, flags=re.MULTILINE)
+    if new_text != text:
+        path.write_text(new_text)
+        return True
+    return False
+
+
+def _register_hooks_for_codex() -> bool:
+    """Register ckg notify command in Codex config.toml.
+
+    Returns True if notify was added, False if already present.
+    Prints a warning and returns False if a non-ckg notify already exists.
+    """
+    text = _read_toml_text(CODEX_CONFIG_PATH)
+
+    # Already has ckg notify
+    if _is_ckg_codex_notify(text):
+        return False
+
+    # Check for existing non-ckg notify
+    if re.search(r"^notify\s*=", text, re.MULTILINE):
+        print(
+            f"Warning: {CODEX_CONFIG_PATH} already has a notify command. "
+            "Remove it manually or use 'ckg uninstall --hooks codex' first.",
+            file=sys.stderr,
+        )
+        return False
+
+    _write_codex_notify(CODEX_CONFIG_PATH, CODEX_NOTIFY_COMMAND)
+    return True
+
+
+def _unregister_hooks_for_codex() -> bool:
+    """Remove ckg notify from Codex config.toml. Only removes if it's a ckg command."""
+    text = _read_toml_text(CODEX_CONFIG_PATH)
+    if not _is_ckg_codex_notify(text):
+        return False
+    return _remove_codex_notify(CODEX_CONFIG_PATH)
+
+
+def _check_hooks_for_codex() -> dict[str, bool]:
+    """Check if ckg notify is registered in Codex config.toml."""
+    text = _read_toml_text(CODEX_CONFIG_PATH)
+    return {"notify": _is_ckg_codex_notify(text)}
+
+
 def _register_hooks_for_platform(platform: str) -> bool:
     """Register ckg hooks for one platform.
 
     Returns True if hooks were added, False if already present.
     """
+    if platform == "codex":
+        return _register_hooks_for_codex()
     settings_path = _platform_path(platform)
     hooks_config = _platform_hooks_config(platform)
     settings = _load_settings(settings_path)
@@ -162,6 +265,8 @@ def _unregister_hooks_for_platform(platform: str) -> bool:
 
     Returns True if hooks were removed, False if none found.
     """
+    if platform == "codex":
+        return _unregister_hooks_for_codex()
     settings_path = _platform_path(platform)
     settings = _load_settings(settings_path)
     hooks = settings.get("hooks", {})
@@ -190,6 +295,8 @@ def _check_hooks_for_platform(platform: str) -> dict[str, bool]:
 
     Returns dict mapping event name to registration status.
     """
+    if platform == "codex":
+        return _check_hooks_for_codex()
     settings = _load_settings(_platform_path(platform))
     hooks_config = _platform_hooks_config(platform)
     hooks = settings.get("hooks", {})

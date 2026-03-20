@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "claude-knowledge-graph"
 version = "0.1.0"
-description = "Auto-capture Claude Code Q&A → Qwen tagging → Obsidian knowledge graph"
+description = "Auto-capture Claude Code, Gemini CLI & Codex CLI Q&A → Qwen tagging → Obsidian knowledge graph"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -22,7 +22,7 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Documentation",
 ]
-dependencies = ["openai>=1.0", "click>=8.0"]
+dependencies = ["openai>=1.0", "click>=8.0", "tomli>=2.0; python_version < '3.11'"]
 
 [project.optional-dependencies]
 graph = ["networkx", "matplotlib", "numpy"]
