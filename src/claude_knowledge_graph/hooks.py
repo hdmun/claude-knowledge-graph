@@ -19,6 +19,8 @@ CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 CKG_MARKER = "claude-knowledge-graph"
 
 HOOK_COMMAND = "python3 -m claude_knowledge_graph.qa_logger"
+CURRENT_CODEX_NOTIFY_MODULE = "claude_knowledge_graph.qa_logger"
+LEGACY_CODEX_NOTIFY_MODULE = "claude_knowledge_graph.codex_hook"
 CODEX_NOTIFY_COMMAND = ["python3", "-m", "claude_knowledge_graph.qa_logger"]
 
 CLAUDE_HOOKS_CONFIG = {
@@ -158,7 +160,12 @@ def _read_toml_text(path: Path) -> str:
 
 def _is_ckg_codex_notify(text: str) -> bool:
     """Check if Codex config text contains a ckg notify command."""
-    return "claude_knowledge_graph" in text
+    return CURRENT_CODEX_NOTIFY_MODULE in text
+
+
+def _is_legacy_ckg_codex_notify(text: str) -> bool:
+    """Check if Codex config text contains a legacy ckg notify command."""
+    return LEGACY_CODEX_NOTIFY_MODULE in text
 
 
 def _write_codex_notify(path: Path, command: list[str]) -> None:
@@ -201,9 +208,14 @@ def _register_hooks_for_codex() -> bool:
     """
     text = _read_toml_text(CODEX_CONFIG_PATH)
 
-    # Already has ckg notify
+    # Already has current ckg notify
     if _is_ckg_codex_notify(text):
         return False
+
+    # Migrate legacy ckg notify in place
+    if _is_legacy_ckg_codex_notify(text):
+        _write_codex_notify(CODEX_CONFIG_PATH, CODEX_NOTIFY_COMMAND)
+        return True
 
     # Check for existing non-ckg notify
     if re.search(r"^notify\s*=", text, re.MULTILINE):
@@ -221,7 +233,7 @@ def _register_hooks_for_codex() -> bool:
 def _unregister_hooks_for_codex() -> bool:
     """Remove ckg notify from Codex config.toml. Only removes if it's a ckg command."""
     text = _read_toml_text(CODEX_CONFIG_PATH)
-    if not _is_ckg_codex_notify(text):
+    if not (_is_ckg_codex_notify(text) or _is_legacy_ckg_codex_notify(text)):
         return False
     return _remove_codex_notify(CODEX_CONFIG_PATH)
 

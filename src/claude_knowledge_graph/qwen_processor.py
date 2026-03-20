@@ -439,7 +439,12 @@ def main() -> None:
 
         pending = get_pending_files()
         if not pending:
-            log("No pending files in queue, exiting")
+            log("No pending files in queue; running Obsidian writer only")
+            try:
+                from claude_knowledge_graph.obsidian_writer import main as write_obsidian
+                write_obsidian()
+            except Exception as e:
+                log(f"Obsidian writer failed: {e}")
             return
 
         log(f"Found {len(pending)} pending file(s)")

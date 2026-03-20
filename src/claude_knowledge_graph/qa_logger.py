@@ -238,6 +238,8 @@ def handle_stop(data: dict) -> None:
         }
         out_file = _qa_output_path(data)
         out_file.write_text(json.dumps(qa_entry, ensure_ascii=False, indent=2))
+        log(f"Created Q&A pair: {out_file.name}")
+        trigger_processor()
         return
 
     # Read the most recent prompt
@@ -335,6 +337,18 @@ def _extract_content_text(content) -> str:
     return str(content) if content else ""
 
 
+def _extract_last_codex_prompt(input_messages) -> str:
+    """Extract the most recent prompt from Codex's string-list payload."""
+    if not isinstance(input_messages, list):
+        return ""
+
+    last_prompt = ""
+    for msg in input_messages:
+        if isinstance(msg, str) and msg.strip():
+            last_prompt = msg
+    return last_prompt
+
+
 def normalize_hook_payload(data: dict) -> dict:
     """Normalize Claude Code, Gemini CLI, and Codex CLI hook payloads."""
     event = data.get("hook_event_name", "")
@@ -362,13 +376,7 @@ def normalize_hook_payload(data: dict) -> dict:
         normalized["source_platform"] = "codex"
         normalized["normalized_event"] = "turn_completed"
         normalized["session_id"] = data.get("thread-id", "unknown")
-        # Extract prompt from last user message in input-messages
-        input_messages = data.get("input-messages", [])
-        last_user_prompt = ""
-        for msg in input_messages:
-            if msg.get("role") == "user":
-                last_user_prompt = _extract_content_text(msg.get("content", ""))
-        normalized["prompt"] = last_user_prompt
+        normalized["prompt"] = _extract_last_codex_prompt(data.get("input-messages", []))
         # Extract response
         normalized["response"] = _extract_content_text(
             data.get("last-assistant-message", "")
@@ -398,7 +406,12 @@ def main() -> None:
         log(f"Failed to parse input: {e}")
         exit_success(source_platform)
 
-    data = normalize_hook_payload(data)
+    try:
+        data = normalize_hook_payload(data)
+    except Exception as e:
+        log(f"Failed to normalize payload: {e}")
+        exit_success(source_platform)
+
     source_platform = data.get("source_platform", "unknown")
     event = data.get("hook_event_name", "")
     log(f"Received event: {event} (session: {data.get('session_id', 'unknown')})")
